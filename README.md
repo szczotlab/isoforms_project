@@ -1,2 +1,2 @@
 # isoforms_project
-looking for isoforms in single cell RNAseq data
+Looking for isoforms in single cell RNAseq data
