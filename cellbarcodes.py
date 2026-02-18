@@ -28,7 +28,7 @@ def main():
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("--output", "-o", help="Output BAM file")
     # parser.add_argument("--length", "-l", default=8, type=int, help="Barcode length")
-    # parser.add_argument("--mismatches", "-k", default=2, type=int, help="No. of mismatches")
+    parser.add_argument("--mismatches", "-k", default=2, type=int, help="No. of mismatches")
     parser.add_argument("bam")
     args = parser.parse_args()
 
@@ -52,8 +52,8 @@ def main():
     barcodes1 = {f"{i+1}": seq for i, seq in enumerate(sorted(barcodes1))}
     barcodes2 = {f"{i+1}": seq for i, seq in enumerate(sorted(barcodes2))}
 
-    index1 = make_index(barcodes1, 2)
-    index2 = make_index(barcodes2, 2)
+    index1 = make_index(barcodes1, args.mismatches)
+    index2 = make_index(barcodes2, args.mismatches)
 
     if not args.output:
         print("No output file given, exiting")
