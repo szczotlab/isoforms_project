@@ -20,15 +20,25 @@ from collections import Counter
 from typing import Dict, Tuple, Iterator
 from tinyalign import hamming_distance
 from argparse import ArgumentParser
-from pysam import AlignmentFile
+from pysam import AlignmentFile, AlignedSegment
+
+# TODO should become CR and CB
+RAW_CELL_BARCODE_TAG = "CB"
+CORRECTED_CELL_BARCODE_TAG = "cc"
 
 
 def main():
     #    logging.basicConfig(format="%(message)s", level="INFO")
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument("--output", "-o", help="Output BAM file")
+    parser.add_argument(
+        "--output",
+        "-o",
+        help="Output BAM file. For demultiplexing, add {barcode} to the output file name to turn it into a filename template",
+    )
     # parser.add_argument("--length", "-l", default=8, type=int, help="Barcode length")
-    parser.add_argument("--mismatches", "-k", default=2, type=int, help="No. of mismatches")
+    parser.add_argument(
+        "--mismatches", "-k", default=1, type=int, help="No. of allowed mismatches per cell barcode"
+    )
     parser.add_argument("bam")
     args = parser.parse_args()
 
@@ -37,49 +47,66 @@ def main():
     counts2 = Counter()
     with AlignmentFile(args.bam) as bam:
         for record in bam:
-            cell_barcode = record.get_tag("CB")
             # What is in the CB tag was concatenated from two index sequences
-            cb1, cb2 = cell_barcode[:10], cell_barcode[10:]
+            cb1, cb2 = extract_cell_barcodes(record.get_tag(RAW_CELL_BARCODE_TAG))
             counts1[cb1] += 1
             counts2[cb2] += 1
 
+    # TODO hardcoded numbers
     barcodes1 = [seq for (seq, count) in counts1.most_common()][:24]
     barcodes2 = [seq for (seq, count) in counts2.most_common()][:16]
     print("Detected cell barcodes:")
     print(*barcodes1)
     print(*barcodes2)
 
-    barcodes1 = {f"{i+1}": seq for i, seq in enumerate(sorted(barcodes1))}
-    barcodes2 = {f"{i+1}": seq for i, seq in enumerate(sorted(barcodes2))}
-
-    index1 = make_index(barcodes1, args.mismatches)
-    index2 = make_index(barcodes2, args.mismatches)
+    corrector = CellbarcodeCorrector(barcodes1, barcodes2, args.mismatches)
 
     if not args.output:
         print("No output file given, exiting")
         return
 
-    error_counts = Counter()
     with AlignmentFile(args.bam) as inbam:
         with AlignmentFile(args.output, mode="wb", template=inbam) as outbam:
             for record in inbam:
-
-                cell_barcode = record.get_tag("CB")
-                cb1, cb2 = cell_barcode[:10], cell_barcode[10:]
-
-                if cb1 in index1 and cb2 in index2:
-                    name1, errors1 = index1[cb1]
-                    name2, errors2 = index2[cb2]
-                    corrected = barcodes1[name1] + barcodes2[name2]
-                    error_counts[errors1 + errors2] += 1
-                    record.set_tag("cc", corrected)
-
+                corrector.correct_one_read(record)
                 outbam.write(record)
 
     print("Error statistics")
     print("Errors     count")
-    for (errors, count) in error_counts.most_common():
+    error_counts = corrector.error_counts
+    for errors, count in error_counts.most_common():
         print(f"{errors:6} {count:9}")
+
+
+class CellbarcodeCorrector:
+    def __init__(self, barcodes1, barcodes2, mismatches: int):
+        self.barcodes1 = {f"{i+1}": seq for i, seq in enumerate(sorted(barcodes1))}
+        self.barcodes2 = {f"{i+1}": seq for i, seq in enumerate(sorted(barcodes2))}
+
+        self.index1 = make_index(self.barcodes1, mismatches)
+        self.index2 = make_index(self.barcodes2, mismatches)
+
+        self.error_counts = Counter()
+
+    def correct_one_read(self, record: AlignedSegment):
+        """
+        Write an error-corrected cell barcode tag to the record
+
+        The record is modified in place.
+        """
+        cb1, cb2 = extract_cell_barcodes(record.get_tag(RAW_CELL_BARCODE_TAG))
+        if cb1 in self.index1 and cb2 in self.index2:
+            name1, errors1 = self.index1[cb1]
+            name2, errors2 = self.index2[cb2]
+            corrected = self.barcodes1[name1] + self.barcodes2[name2]
+            self.error_counts[errors1 + errors2] += 1
+            record.set_tag(CORRECTED_CELL_BARCODE_TAG, corrected)
+
+
+def extract_cell_barcodes(cb: str) -> tuple[str, str]:
+    """Extract the two cell barcodes from the CB tag"""
+    # TODO currently hardcoded
+    return cb[:10], cb[10:]
 
 
 def hamming_sphere(s: str, k: int) -> Iterator[str]:
@@ -118,7 +145,6 @@ def hamming_environment(s: str, k: int):
     for e in range(k + 1):
         for t in hamming_sphere(s, e):
             yield t, e
-
 
 
 def make_index(
