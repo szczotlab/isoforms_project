@@ -16,7 +16,9 @@ Error-correct cell barcodes
 from itertools import product
 import random
 import sys
+from contextlib import ExitStack
 from collections import Counter
+from itertools import product
 from typing import Dict, Tuple, Iterator
 from tinyalign import hamming_distance
 from argparse import ArgumentParser
@@ -66,16 +68,37 @@ def main():
         return
 
     with AlignmentFile(args.bam) as inbam:
-        with AlignmentFile(args.output, mode="wb", template=inbam) as outbam:
-            for record in inbam:
-                corrector.correct_one_read(record)
-                outbam.write(record)
+        if "{barcode}" in args.output:
+            # Demultiplex
+            paths = {
+                seq1 + seq2: args.output.replace("{barcode}", seq1 + seq2)
+                for seq1, seq2 in product(barcodes1, barcodes2)
+            }
+            with ExitStack() as stack:
+                files = {
+                    seq: stack.enter_context(AlignmentFile(paths[seq], mode="wb", template=inbam))
+                    for seq in paths
+                }
+                for record in inbam:
+                    corrected = corrector.correct_one_read(record)
+                    if corrected is not None:
+                        files[corrected].write(record)
+        else:
+            # No demultiplexing
+            with AlignmentFile(args.output, mode="wb", template=inbam) as outbam:
+                for record in inbam:
+                    corrector.correct_one_read(record)
+                    outbam.write(record)
 
     print("Error statistics")
     print("Errors     count")
     error_counts = corrector.error_counts
     for errors, count in error_counts.most_common():
         print(f"{errors:6} {count:9}")
+
+    print("Barcode statistics")
+    print("Corrected barcodes:", corrector.n_corrected)
+    print("Not corrected:", corrector.n_unknown)
 
 
 class CellbarcodeCorrector:
@@ -87,6 +110,8 @@ class CellbarcodeCorrector:
         self.index2 = make_index(self.barcodes2, mismatches)
 
         self.error_counts = Counter()
+        self.n_corrected = 0
+        self.n_unknown = 0
 
     def correct_one_read(self, record: AlignedSegment):
         """
@@ -101,6 +126,11 @@ class CellbarcodeCorrector:
             corrected = self.barcodes1[name1] + self.barcodes2[name2]
             self.error_counts[errors1 + errors2] += 1
             record.set_tag(CORRECTED_CELL_BARCODE_TAG, corrected)
+            self.n_corrected += 1
+            return corrected
+        else:
+            self.n_unknown += 1
+            return None
 
 
 def extract_cell_barcodes(cb: str) -> tuple[str, str]:
