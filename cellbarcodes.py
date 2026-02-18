@@ -156,6 +156,7 @@ def make_index(
     """
     index: Dict[str, Tuple[str, int]] = dict()
     has_warned = False
+    ambiguous = []
     for name, sequence in sequences.items():
         for t, errors in hamming_environment(sequence, max_errors):
             if t in index:
@@ -170,10 +171,15 @@ def make_index(
                         f"of them because the number of errors is {errors} compared to both.",
                         file=sys.stderr,
                     )
+                    ambiguous.append(t)
                     # has_warned = True
             else:
                 index[t] = (name, errors)
-    print(f"Built an index containing {len(index)} strings.", file=sys.stderr)
+    for t in ambiguous:
+        del index[t]
+    print(f"Built an index containing {len(index)} strings", file=sys.stderr)
+    if ambiguous:
+         print(f"  excluded {len(ambiguous)} ambiguous sequences.")
     return index
 
 
