@@ -1,0 +1,108 @@
+# commands to process the files
+
+
+cd /cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Projects/M_Szczot_2405/examineFastqFiles/processFirst100k
+
+### 1: extract UMIs
+
+R1in="../RawFirst400klines/P28203_5007_S7_R1_001.first100kReads.fastq.gz"
+R2in="../RawFirst400klines/P28203_5007_S7_R2_001.first100kReads.fastq.gz"
+
+outR1withUmi="P28203_5007_S7_R1_001.umi.fastq.gz"
+outR2withUmi="P28203_5007_S7_R2_001.umi.fastq.gz"
+log="umi_extract.log"
+outR1withoutUmi="P28203_5007_S7_R1_001.withoutUmi.fastq.gz"
+outR2withoutUmi="P28203_5007_S7_R2_001.withoutUmi.fastq.gz"
+
+umi_tools=/cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Apps/pixiEnvs/umi_tools/umi_tools-1.1.6/.pixi/envs/default/bin/umi_tools 
+
+$umi_tools extract --extract-method=regex --stdin=$R1in --read2-in=$R2in --stdout=$outR1withUmi --read2-out=$outR2withUmi --bc-pattern='^(?P<discard_1>ATTGCGCAATG{s<=1})(?P<umi_1>.{8}).*' --log=$log --filtered-out=$outR1withoutUmi --filtered-out2=$outR2withoutUmi
+
+### 2: concatenate fastqs
+
+cat $outR1withUmi $outR1withoutUmi > P28203_5007_S7_R1_001.extractedUmi.fastq.gz
+cat $outR2withUmi $outR2withoutUmi > P28203_5007_S7_R2_001.extractedUmi.fastq.gz
+
+
+
+### 3: trim adapter(s)
+
+module load cutadapt/5.1
+
+inR1="P28203_5007_S7_R1_001.extractedUmi.fastq.gz"
+inR2="P28203_5007_S7_R2_001.extractedUmi.fastq.gz"
+outR1="P28203_5007_S7_R1_001.extractedUmi.trimmed.fastq.gz"
+outR2="P28203_5007_S7_R2_001.extractedUmi.trimmed.fastq.gz"
+report="cutadapt.report.txt"
+
+cutadapt -a CTGTCTCTTATACACATCT -A N{8}CATTGCGCAATCTGTCTCTTATACACATCT -A CTGTCTCTTATACACATCT --minimum-length 10 --pair-filter=any -o $outR1 -p $outR2 $inR1 $inR2 > $report
+
+
+### 4: fix read names before mapping
+
+python=/cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Apps/pixiEnvs/python/python-v3.11.14/.pixi/envs/default/bin/python
+
+inR1="P28203_5007_S7_R1_001.extractedUmi.trimmed.fastq.gz"
+inR2="P28203_5007_S7_R2_001.extractedUmi.trimmed.fastq.gz"
+outR1="P28203_5007_S7_R1_001.extractedUmi.trimmed.fixedNames.fastq.gz"
+outR2="P28203_5007_S7_R2_001.extractedUmi.trimmed.fixedNames.fastq.gz"
+
+$python fixFastqReadNames.py --inFastq1 $inR1 --inFastq2 $inR2 --outFastq1 $outR1 --outFastq2 $outR2 --threads 1
+
+
+### 5: map reads with STAR
+
+# reserve node and ssh into the reserved node (with ~50GB of RAM)
+salloc --nodes=1 -t 10:00:00 -A naiss2025-22-1458 -p main --mem=50000MB
+echo $SLURM_NODELIST # nid001228
+ssh nid001228
+
+cd /cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Projects/M_Szczot_2405/examineFastqFiles/processFirst100k
+
+# needed files and tools
+module load rnastar/2.7.11b
+
+genomeDir=/cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Db/mouse/gencode/release_M37/refSTAR/refSTAR-2.7.11b-primaryRef-fullAnnotation-overhang133/ref
+
+fileR1=P28203_5007_S7_R1_001.extractedUmi.trimmed.fixedNames.fastq.gz
+fileR2=P28203_5007_S7_R2_001.extractedUmi.trimmed.fixedNames.fastq.gz
+
+outPrefix=P28203_5007_S7_
+
+# map, keeping unmapped reads in the bam file
+STAR --runThreadN 15 --runMode alignReads --genomeDir $genomeDir --readFilesIn $fileR1 $fileR2 --outFilterType BySJout --outFilterMultimapNmax 20 --alignSJoverhangMin 8 --alignSJDBoverhangMin 1 --outFilterMismatchNmax 999 --outFilterMismatchNoverReadLmax 0.04 --alignIntronMin 20 --alignIntronMax 1000000 --alignMatesGapMax 1000000 --outFileNamePrefix $outPrefix --outSAMtype BAM SortedByCoordinate --outSAMattributes NH HI AS nM XS --outSAMunmapped Within --readFilesCommand zcat
+
+# index bam file
+
+module purge & module load samtools/1.20
+samtools index P28203_5007_S7_Aligned.sortedByCoord.out.bam
+
+
+
+### 6: add UMI and cell barcode as tags (extract from the read name)
+
+module load samtools/1.20
+
+samtools view -h P28203_5007_S7_Aligned.sortedByCoord.out.bam | \
+awk '
+BEGIN {OFS="\t"}
+# Keep header lines as-is
+/^@/ {print; next}
+{
+    cb=""; ub="";
+    # Extract CB and UB from read name
+    if ($1 ~  /_OX:[A-Z]+_CR:[A-Z-]+$/) {
+        match($1, /_OX:([A-Z]+)_CR:([A-Z-]+)$/, arr)
+        ub=arr[1]; cb=arr[2] 
+        $0 = $0 "\tCR:Z:" cb "\tOX:Z:" ub
+    }
+    else if ($1 ~ /_CR:[A-Z-]+$/) {
+        match($1, /_CR:([A-Z-]+)$/, arr)
+        cb=arr[1]
+        $0 = $0 "\tCR:Z:" cb
+    }
+    print
+}' | samtools view -b -o P28203_5007_S7_Aligned.sortedByCoord.out.withTags.bam
+
+
+
