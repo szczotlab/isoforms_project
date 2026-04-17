@@ -1,0 +1,7 @@
+
+## raw data dir (contains fastq files and the inclusive list. Each plate is a separate folder)
+rawDataDir: "/cfs/klemming/projects/snic/naiss2024-22-1277/DATA/"
+
+## plates
+#plates:
+

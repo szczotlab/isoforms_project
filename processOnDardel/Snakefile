@@ -1,0 +1,41 @@
+#
+# Date (created): April 16, 2026
+# Author: Dania Machlab
+# Overview: 
+# 	This Snakefile contains all analyses and scripts run on Dardel, starting from 
+# 	the raw fastq files, all the way to the final count matrices. We are dealing with
+# 	smartSeq3 data. This means that some R1 reads (those fromt he 5' end of the 
+#	original mRNA) contain a tag sequence which is followed by an 8-base long 
+#	unique molecular identifier (UMI). Other R1 reads (internal reads from the 
+# 	transcript) contain no tag or UMI sequences. All R2 reads also just contain the 
+# 	transcript sequence. TODO: provide more details on the setup, read lengths, 
+# 	why some were trimmed by NGI, that they gave us the full untrimmed versions 
+#	for a subset of the plates, the metadata from the group, expected adapters etc.
+# Running Snakemake:
+# 	# to run snakemake on Dardel, start by activating the python venv
+# 	venv="/cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Apps/snakemake/snakemake-v9.19.0/bin"
+# 	source $venv/activate
+#
+#	# dry run (note that the profile/config.yaml file cotnains parameter specifically for submitting on Dardel and to this project)
+#       snakemake -j 2 --profile slurm -np
+#
+#
+
+## config file 
+## ... This file specifies the tools and references used
+configfile: "config.yaml"
+
+## plates (hard-coded so we can easily include/exclude specific plates)
+plates = ['sample_01', 'sample_02', 'sample_03', 'sample_04', 'sample_05', 
+          'sample_06', 'sample_07', 'sample_08', 'sample_09', 'sample_10', 
+          'sample_11']
+
+
+## ------------------------------------------------------------------------
+## 00- default rules to run
+## ------------------------------------------------------------------------
+
+rule all:
+  input:
+    ## ad expected files here
+

@@ -1,0 +1,9 @@
+executor: "slurm"
+slurm-logdir: "logs/slurm"
+default-resources:
+  slurm_account: "naiss2025-22-1458"
+  slurm_partition: "main"
+  runtime: 120
+  tasks: 1
+  threads: 2
+  # note: partition main: max 24 hrs, partition long max 7 days
