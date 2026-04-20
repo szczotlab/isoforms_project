@@ -1,6 +1,12 @@
 
+## working directory (this is where the Snakefile exists)
+baseDir: "/cfs/klemming/projects/snic/naiss2024-22-1277/Dania/GitHub/isoforms_project/processOnDardel/"
+
 ## raw data dir (contains fastq files and the inclusive list. Each plate is a separate folder)
-rawDataDir: "/cfs/klemming/projects/snic/naiss2024-22-1277/DATA/"
+# path to the folder which contains the raw data of the project
+originalRawDataDir: "/cfs/klemming/projects/snic/naiss2024-22-1277/DATA/"
+# name of folder which will be created int eh working directory, containing symlinks to the fastq files
+rawDataDir: "raw/"
 
 ## plates
 #plates:

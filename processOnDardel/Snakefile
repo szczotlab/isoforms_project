@@ -25,17 +25,73 @@
 ## ... This file specifies the tools and references used
 configfile: "config.yaml"
 
+## globals
+import os
+
+baseDir = config["baseDir"]
+originalRawDataDir = config["originalRawDataDir"]
+rawDataDir = config["rawDataDir"]; os.makedirs(rawDataDir, exist_ok=True)
+
 ## plates (hard-coded so we can easily include/exclude specific plates)
 plates = ['sample_01', 'sample_02', 'sample_03', 'sample_04', 'sample_05', 
           'sample_06', 'sample_07', 'sample_08', 'sample_09', 'sample_10', 
           'sample_11']
 
+## create a dictionary, with plates as keys, storing ngiID and the inclusion
+## ... file as values.
+plateInfo = {
+  plate: {
+    "ngiID": [f for f in os.listdir(os.path.join(originalRawDataDir, plate, "raw")) if "_R1_" in f][0].split("_R1_")[0],
+    "inclusionListFile": [f for f in os.listdir(os.path.join(originalRawDataDir, plate, "raw")) if "well_barcodes" in f][0]
+  }
+  for plate in plates
+}
+
+print("Processing the following plates: ", plates)
+print("With the following plate information: ", plateInfo)
 
 ## ------------------------------------------------------------------------
-## 00- default rules to run
+## 00 - default rules to run
 ## ------------------------------------------------------------------------
 
 rule all:
   input:
-    ## ad expected files here
+    ## 01: make symlinks to raw data
+    expand(rawDataDir + "{plate}/{ngiID}_R1_001.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand(rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/makeSymLinks/{plate}_{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+
+
+
+## ------------------------------------------------------------------------
+## 01 - make symbolic links to raw data 
+## ------------------------------------------------------------------------
+
+rule makeSymLinks:
+  input:
+    inR1 = originalRawDataDir + "{plate}/raw/{ngiID}_R1_001.fastq.gz",
+    inR2 = originalRawDataDir + "{plate}/raw/{ngiID}_R2_001.fastq.gz"
+  output:
+    outR1 = rawDataDir + "{plate}/{ngiID}_R1_001.fastq.gz",
+    outR2 = rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz",
+    logFile = "logs/ruleLogs/makeSymLinks/{plate}_{ngiID}.log"
+  params:  
+    outDir = directory(rawDataDir + "{plate}")
+  shell:
+    '''
+    # setup 
+    cd {baseDir} && \
+    if [ ! -d "logs/ruleLogs/makeSymLinks" ]; then
+      mkdir -p "logs/ruleLogs/makeSymLinks";
+    fi && \
+    if [ ! -d {params.outDir} ]; then
+      mkdir -p {params.outDir};
+    fi && \
+ 
+    # create symbolic links to fastq files
+    echo "ln -sf {input.inR1} {output.outR1}" > {output.logFile} && \
+    ln -sf {input.inR1} {output.outR1} >> {output.logFile} 2>&1 && \
+    echo "ln -sf {input.inR2} {output.outR2}" >> {output.logFile} && \
+    ln -sf {input.inR2} {output.outR2} >> {output.logFile} 2>&1
+    '''
 

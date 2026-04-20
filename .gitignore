@@ -1,3 +1,7 @@
 misc
 
 processOnDardel/.snakemake
+processOnDardel/logs
+processOnDardel/raw
+processOnDardel/processed
+
