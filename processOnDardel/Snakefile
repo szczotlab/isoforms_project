@@ -32,10 +32,14 @@ baseDir = config["baseDir"]
 originalRawDataDir = config["originalRawDataDir"]
 rawDataDir = config["rawDataDir"]; os.makedirs(rawDataDir, exist_ok=True)
 
+umi_tools = config["umi_tools"]
+cutadaptMod = config["cutadaptMod"]
+
 ## plates (hard-coded so we can easily include/exclude specific plates)
-plates = ['sample_01', 'sample_02', 'sample_03', 'sample_04', 'sample_05', 
-          'sample_06', 'sample_07', 'sample_08', 'sample_09', 'sample_10', 
-          'sample_11']
+#plates = ['sample_01', 'sample_02', 'sample_03', 'sample_04', 'sample_05', 
+#          'sample_06', 'sample_07', 'sample_08', 'sample_09', 'sample_10', 
+#          'sample_11']
+plates = ['sample_01']
 
 ## create a dictionary, with plates as keys, storing ngiID and the inclusion
 ## ... file as values.
@@ -60,7 +64,12 @@ rule all:
     expand(rawDataDir + "{plate}/{ngiID}_R1_001.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand(rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("logs/ruleLogs/makeSymLinks/{plate}_{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-
+    ## 02: process fastq files before mapping
+    expand("processed/fastqs/{plate}/{ngiID}_R1_001.umi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/fastqs/{plate}/{ngiID}_R1_001.noUmi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/fastqs/{plate}/{ngiID}_R2_001.umi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/fastqs/{plate}/{ngiID}_R2_001.noUmi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),      
+    expand("logs/ruleLogs/extractUMIs/{plate}_{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
 
 
 ## ------------------------------------------------------------------------
@@ -94,4 +103,46 @@ rule makeSymLinks:
     echo "ln -sf {input.inR2} {output.outR2}" >> {output.logFile} && \
     ln -sf {input.inR2} {output.outR2} >> {output.logFile} 2>&1
     '''
+
+## ------------------------------------------------------------------------
+## 02 - process fastq files before mapping
+##        this involves: extracting the UMI if present, trimming adapters
+##        and fixing the read names before mapping. 
+## ------------------------------------------------------------------------
+
+rule extractUMIs:
+  input:
+    inR1 = rawDataDir + "{plate}/{ngiID}_R1_001.fastq.gz",
+    inR2 = rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz"
+  output:
+    outUmiR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.umi.fastq.gz",
+    outNoUmiR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.noUmi.fastq.gz",
+    outUmiR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.umi.fastq.gz",
+    outNoUmiR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.noUmi.fastq.gz",    
+    logFile = "logs/ruleLogs/extractUMIs/{plate}_{ngiID}.log"
+  params:
+    fastqDir = directory("processed/fastqs/{plate}"),
+    bcPatternParam = lambda wildcards: """--bc-pattern='^(?P<discard_1>ATTGCGCAATG{s<=1})(?P<umi_1>.{8}).*'"""
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    if [ ! -d "logs/ruleLogs/extractUMIs" ]; then
+      mkdir -p "logs/ruleLogs/extractUMIs";
+    fi && \
+    if [ ! -d {params.fastqDir} ]; then
+      mkdir -p {params.fastqDir};
+    fi && \
+    
+    # extract UMI if present. Some R1 reads contain UMIs. These are the reads
+    # ... which happened to be at the strat of the original transcript (5' end). 
+    # ... If an R1 read starts with a specific tag sequence (ATTGCGCAATG), then 
+    # ... this is followed by 8 bases corresponding to the UMI. 
+    {umi_tools} extract --extract-method=regex --stdin={input.inR1} --read2-in={input.inR2} \
+      --stdout={output.outUmiR1} --read2-out={output.outUmiR2} {params.bcPatternParam} \
+      --log={output.logFile} --filtered-out={output.outNoUmiR1} --filtered-out2={output.outNoUmiR2}
+    '''
+
+
+
 
