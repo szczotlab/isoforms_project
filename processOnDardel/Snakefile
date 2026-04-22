@@ -34,6 +34,10 @@ rawDataDir = config["rawDataDir"]; os.makedirs(rawDataDir, exist_ok=True)
 
 umi_tools = config["umi_tools"]
 cutadaptMod = config["cutadaptMod"]
+starMod = config["starMod"]
+samtoolsMod = config["samtoolsMod"]
+
+starRefGenome = config["starRefGenome"]
 
 ## plates (hard-coded so we can easily include/exclude specific plates)
 #plates = ['sample_01', 'sample_02', 'sample_03', 'sample_04', 'sample_05', 
@@ -65,12 +69,15 @@ rule all:
     expand(rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("logs/ruleLogs/makeSymLinks/{plate}_{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     ## 02: process fastq files before mapping
-    expand("processed/fastqs/{plate}/{ngiID}_R1_001.umi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-    expand("processed/fastqs/{plate}/{ngiID}_R1_001.noUmi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-    expand("processed/fastqs/{plate}/{ngiID}_R2_001.umi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-    expand("processed/fastqs/{plate}/{ngiID}_R2_001.noUmi.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),      
     expand("logs/ruleLogs/extractUMIs/{plate}_{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-
+    expand("logs/ruleLogs/trimAdapter/{plate}/{ngiID}_cutadapt.report.txt", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/fastqs/{plate}/{ngiID}_R1_001.extractedUmi.trimmed.fixedReadName.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fixedReadName.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/fixReadNames/{plate}/{ngiID}_fixReadNames.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    ## 03: map with STAR
+    expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam.bai", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/mapWithStar/{plate}/{ngiID}_mapWithStar.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
 
 ## ------------------------------------------------------------------------
 ## 01 - make symbolic links to raw data 
@@ -115,10 +122,10 @@ rule extractUMIs:
     inR1 = rawDataDir + "{plate}/{ngiID}_R1_001.fastq.gz",
     inR2 = rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz"
   output:
-    outUmiR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.umi.fastq.gz",
-    outNoUmiR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.noUmi.fastq.gz",
-    outUmiR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.umi.fastq.gz",
-    outNoUmiR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.noUmi.fastq.gz",    
+    outUmiR1 = temp("processed/fastqs/{plate}/{ngiID}_R1_001.umi.fastq.gz"),
+    outNoUmiR1 = temp("processed/fastqs/{plate}/{ngiID}_R1_001.noUmi.fastq.gz"),
+    outUmiR2 = temp("processed/fastqs/{plate}/{ngiID}_R2_001.umi.fastq.gz"),
+    outNoUmiR2 = temp("processed/fastqs/{plate}/{ngiID}_R2_001.noUmi.fastq.gz"),    
     logFile = "logs/ruleLogs/extractUMIs/{plate}_{ngiID}.log"
   params:
     fastqDir = directory("processed/fastqs/{plate}"),
@@ -143,6 +150,103 @@ rule extractUMIs:
       --log={output.logFile} --filtered-out={output.outNoUmiR1} --filtered-out2={output.outNoUmiR2}
     '''
 
+rule concatenateFastqs:
+  input:
+    inUmiR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.umi.fastq.gz",
+    inNoUmiR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.noUmi.fastq.gz",
+    inUmiR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.umi.fastq.gz",
+    inNoUmiR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.noUmi.fastq.gz"
+  output:
+    outR1 = temp("processed/fastqs/{plate}/{ngiID}_R1_001.umi.noUmi.concat.fastq.gz"),
+    outR2 = temp("processed/fastqs/{plate}/{ngiID}_R2_001.umi.noUmi.concat.fastq.gz"),
+    logFile = "logs/ruleLogs/concatenateFastqs/{plate}_{ngiID}.log"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    
+    # concatenate
+    echo "cat {input.inUmiR1} {input.inNoUmiR1} > {output.outR1}" > {output.logFile} && \
+    cat {input.inUmiR1} {input.inNoUmiR1} > {output.outR1} 2>> {output.logFile} && \
+    echo "cat {input.inUmiR2} {input.inNoUmiR2} > {output.outR2}" >> {output.logFile} && \
+    cat {input.inUmiR2} {input.inNoUmiR2} > {output.outR2} 2>> {output.logFile}
+    '''
 
+rule trimAdapter:
+  input:
+    inR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.umi.noUmi.concat.fastq.gz",
+    inR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.umi.noUmi.concat.fastq.gz"
+  output:
+    outR1 = temp("processed/fastqs/{plate}/{ngiID}_R1_001.extractedUmi.trimmed.fastq.gz"),
+    outR2 = temp("processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fastq.gz"), 
+    cutadaptReport = "logs/ruleLogs/trimAdapter/{plate}/{ngiID}_cutadapt.report.txt"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    module load {cutadaptMod} && \
+
+    # trim adapter sequence
+    # ... we trim for the expected Tn5 adapter sequence (CTGTCTCTTATACACATCT) from the 3' ends of R1 and R2
+    # ... we also trim for cases where R2 has read into an R1 which contains the tag and UMI. In 
+    # ... this case, we need to trim for revCompUMI.revCompTag.adapter.
+    cutadapt -a CTGTCTCTTATACACATCT -A N{{8}}CATTGCGCAATCTGTCTCTTATACACATCT -A CTGTCTCTTATACACATCT \
+      --cores 0 --minimum-length 10 --pair-filter=any -o {output.outR1} -p {output.outR2} \
+      {input.inR1} {input.inR2} > {output.cutadaptReport} 2>&1
+    '''
+
+rule fixReadNames:
+  input:
+    inR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.extractedUmi.trimmed.fastq.gz",
+    inR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fastq.gz",
+    script = "scripts/fixFastqReadNames.py"
+  output:
+    outR1 = "processed/fastqs/{plate}/{ngiID}_R1_001.extractedUmi.trimmed.fixedReadName.fastq.gz",
+    outR2 = "processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fixedReadName.fastq.gz",
+    logFile = "logs/ruleLogs/fixReadNames/{plate}/{ngiID}_fixReadNames.log"
+  params:
+    threads = 10
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    
+    python3 {input.script} --inFastq1 {input.inR1} --inFastq2 {input.inR2} --outFastq1 {output.outR1} \
+      --outFastq2 {output.outR2} --threads {params.threads} > {output.logFile} 2>&1
+    '''
+
+## ------------------------------------------------------------------------
+## 03 - map reads (per plate) with STAR
+## ------------------------------------------------------------------------
+
+rule mapWithStar:
+  input:
+    R1 = "processed/fastqs/{plate}/{ngiID}_R1_001.extractedUmi.trimmed.fixedReadName.fastq.gz",
+    R2 = "processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fixedReadName.fastq.gz"
+  output:
+    bam = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam", 
+    index = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam.bai",
+    logFile = "logs/ruleLogs/mapWithStar/{plate}/{ngiID}_mapWithStar.log"
+  params:
+    threads = 30, 
+    prefix = "processed/bam/{plate}/{ngiID}_"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    module load {starMod} && \
+    module load {samtoolsMod} && \
+
+    # map (keeping unmapped read in the bam file)
+    STAR --runThreadN {params.threads} --runMode alignReads --genomeDir {starRefGenome} \
+      --readFilesIn {input.R1} {input.R2} --outFilterType BySJout --outFilterMultimapNmax 20 \
+      --alignSJoverhangMin 8 --alignSJDBoverhangMin 1 --outFilterMismatchNmax 999 \
+      --outFilterMismatchNoverReadLmax 0.04 --alignIntronMin 20 --alignIntronMax 1000000 \
+      --alignMatesGapMax 1000000 --outFileNamePrefix {params.prefix} --outSAMtype BAM SortedByCoordinate \
+      --outSAMattributes NH HI AS nM XS --outSAMunmapped Within --readFilesCommand zcat > {output.logFile} 2>&1 && \
+ 
+    # index
+    samtools index {output.bam}
+    '''
 
 

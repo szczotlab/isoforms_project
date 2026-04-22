@@ -3,16 +3,26 @@ slurm-logdir: "logs/slurm"
 default-resources:
   slurm_account: "naiss2025-22-1458"
   slurm_partition: "main"
-  runtime: 10800  # time in seconds (3hrs). Note that this should technically be in minutes, but the system on Dardel sees it in seconds.
+  runtime: '2h'  # time in seconds (3hrs). Note that this should technically be in minutes, but the system on Dardel sees it in seconds.
   tasks: 1
   threads: 2
   # note: partition main: max 24 hrs, partition long max 7 days
 ## rule-specific resources
 set-resources:
   extractUMIs:
-    slurm_account: "naiss2025-22-1458"
-    slurm_partition: "main"
-    runtime: 18000
+    runtime: '5h'
     threads: 10
     mem_mb: 30000
+  concatenateFastqs:
+    runtime: '5h'
+  trimAdapter:
+    runtime: '5h'
+    threads: 10
+  fixReadNames:
+    runtime: '5h'
+    threads: 10
+  mapWithStar:
+    runtime: '7h'
+    threads: 30
+    mem: '50GB'
 

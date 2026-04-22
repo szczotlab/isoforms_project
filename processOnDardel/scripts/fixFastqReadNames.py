@@ -79,7 +79,7 @@ def fixReadNames(inR1, inR2, outR1, outR2, nThreads=1):
 
             ## case 3: sanity check for cases where the "_" count is greater than 1
             else:
-                raise ValueError(f"More than one underscore found — stopping at read {r1.id}.")
+                raise ValueError(f"More than one underscore found. Stopping at read {r1.id}.")
             
             ## update read counter
             readCounter += 1
