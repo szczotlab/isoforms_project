@@ -24,9 +24,8 @@ from tinyalign import hamming_distance
 from argparse import ArgumentParser
 from pysam import AlignmentFile, AlignedSegment
 
-# TODO should become CR and CB
-RAW_CELL_BARCODE_TAG = "CB"
-CORRECTED_CELL_BARCODE_TAG = "cc"
+RAW_CELL_BARCODE_TAG = "CR"
+CORRECTED_CELL_BARCODE_TAG = "CB"
 
 
 def main():
