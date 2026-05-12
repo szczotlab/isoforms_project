@@ -75,9 +75,12 @@ rule all:
     expand("processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fixedReadName.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("logs/ruleLogs/fixReadNames/{plate}/{ngiID}_fixReadNames.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     ## 03: map with STAR
-    expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-    expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam.bai", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("logs/ruleLogs/mapWithStar/{plate}/{ngiID}_mapWithStar.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam.bai", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/addTagsToBamAndIndex/{plate}/{ngiID}_addTagsToBamAndIndex.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+
+
 
 ## ------------------------------------------------------------------------
 ## 01 - make symbolic links to raw data 
@@ -224,8 +227,8 @@ rule mapWithStar:
     R1 = "processed/fastqs/{plate}/{ngiID}_R1_001.extractedUmi.trimmed.fixedReadName.fastq.gz",
     R2 = "processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fixedReadName.fastq.gz"
   output:
-    bam = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam", 
-    index = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam.bai",
+    bam = temp("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam"), 
+    index = temp("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam.bai"),
     logFile = "logs/ruleLogs/mapWithStar/{plate}/{ngiID}_mapWithStar.log"
   params:
     threads = 30, 
@@ -247,6 +250,29 @@ rule mapWithStar:
  
     # index
     samtools index {output.bam}
+    '''
+
+rule addTagsToBamAndIndex:
+  input:
+    inBam = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.bam"
+  params:  
+    script = "scripts/addTagsFromReadName.sh"
+  output:
+    outBam = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam",
+    outIndex = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam.bai",
+    logFile = "logs/ruleLogs/addTagsToBamAndIndex/{plate}/{ngiID}_addTagsToBamAndIndex.log"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    module load {samtoolsMod} && \
+
+    # add OX (uncorrected UMI) and CR (uncorrected CB) tags from read name
+    samtools view -h {input.inBam} | {params.script} | \
+      samtools view -b -o {output.outBam} > {output.logFile} 2>&1 && \
+
+    # index bam file
+    samtools index {output.outBam} 
     '''
 
 

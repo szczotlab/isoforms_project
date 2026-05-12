@@ -25,4 +25,7 @@ set-resources:
     runtime: '7h'
     threads: 30
     mem: '50GB'
+  addTagsToBamAndIndex:
+    runtime: '5h'
+    mem: '20GB'
 
