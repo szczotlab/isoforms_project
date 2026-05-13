@@ -79,7 +79,8 @@ rule all:
     expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam.bai", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("logs/ruleLogs/addTagsToBamAndIndex/{plate}/{ngiID}_addTagsToBamAndIndex.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-
+    ## 04: CB correction, de-multiplexing and de-duplicating
+    expand("processed/bamDemultiplexed/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.replaceNs.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
 
 
 ## ------------------------------------------------------------------------
@@ -274,5 +275,34 @@ rule addTagsToBamAndIndex:
     # index bam file
     samtools index {output.outBam} 
     '''
+
+## ------------------------------------------------------------------------
+## 04 - Cell barcode correction, de-multiplexing and de-duplication
+## ------------------------------------------------------------------------
+
+# Since we have cell barcodes with Ns as a base instead of only [A,C,G,T] 
+# ... we replace the Ns with an A. The reason for this is that the 
+# ... script which will do cell barcode correction strictly assumes that
+# ... the 4 bases will be observed, and this is not changeable at this stage
+rule replaceNsWithAsInCRtag:
+  input:
+    inBam = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam"
+  params:
+    script = "scripts/fixNsInCR.sh"
+  output:
+    outBam = "processed/bamDemultiplexed/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.replaceNs.bam"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    module load {samtoolsMod} && \
+
+    # in teh CR tag, replace any "N" with an "A"
+    samtools view -h {input.inBam} | {params.script} | \
+      samtools view -b -o {output.outBam}
+    '''
+
+
+
 
 

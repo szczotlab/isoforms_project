@@ -28,4 +28,7 @@ set-resources:
   addTagsToBamAndIndex:
     runtime: '5h'
     mem: '20GB'
+  replaceNsWithAsInCRtag:
+    runtime: '5h'
+    mem: '20GB'
 
