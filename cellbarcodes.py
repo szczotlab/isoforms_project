@@ -108,6 +108,7 @@ class CellbarcodeCorrector:
         self.index1 = make_index(self.barcodes1, mismatches)
         self.index2 = make_index(self.barcodes2, mismatches)
 
+        self.mismatches = mismatches
         self.error_counts = Counter()
         self.n_corrected = 0
         self.n_unknown = 0
@@ -118,11 +119,35 @@ class CellbarcodeCorrector:
 
         The record is modified in place.
         """
-        cb1, cb2 = extract_cell_barcodes(record.get_tag(RAW_CELL_BARCODE_TAG))
+        original_cb1, original_cb2 = extract_cell_barcodes(record.get_tag(RAW_CELL_BARCODE_TAG))
+
+        # Since the index does not contain sequences with N wildcards, we replace
+        # them with "A" nucleotides. We want to count each N as an error, so if
+        # the A results in a mismatch, we get the expected result. If the A
+        # results in a match, the number of errors needs to be increased, which
+        # is done below.
+        cb1 = original_cb1.replace("N", "A")
+        cb2 = original_cb2.replace("N", "A")
+
         if cb1 in self.index1 and cb2 in self.index2:
             name1, errors1 = self.index1[cb1]
             name2, errors2 = self.index2[cb2]
-            corrected = self.barcodes1[name1] + self.barcodes2[name2]
+            corrected1 = self.barcodes1[name1]
+            corrected2 = self.barcodes2[name2]
+            corrected = corrected1 + corrected2
+
+            # Each 'N' replaced with an 'A' that happens to match the correct
+            # sequence is incorrectly not counted as an error. Fix this here.
+            if original_cb1.count("N") > 0:
+                errors1 = hamming_distance(corrected1, original_cb1)
+                if errors1 > self.mismatches:
+                    self.n_unknown += 1
+                    return
+            if original_cb2.count("N") > 0:
+                errors2 = hamming_distance(corrected2, original_cb2)
+                if errors2 > self.mismatches:
+                    self.n_unknown += 1
+                    return
             self.error_counts[errors1 + errors2] += 1
             record.set_tag(CORRECTED_CELL_BARCODE_TAG, corrected)
             self.n_corrected += 1
