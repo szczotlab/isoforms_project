@@ -36,14 +36,19 @@ umi_tools = config["umi_tools"]
 cutadaptMod = config["cutadaptMod"]
 starMod = config["starMod"]
 samtoolsMod = config["samtoolsMod"]
+python = config["python"]
+featureCounts = config["featureCounts"]
+
+cbCorrectionScript = config["cbCorrectionScript"]
 
 starRefGenome = config["starRefGenome"]
+exonGtf = config["exonGtf"]
 
 ## plates (hard-coded so we can easily include/exclude specific plates)
-#plates = ['sample_01', 'sample_02', 'sample_03', 'sample_04', 'sample_05', 
-#          'sample_06', 'sample_07', 'sample_08', 'sample_09', 'sample_10', 
-#          'sample_11']
-plates = ['sample_01']
+plates = ['sample_01', 'sample_02', 'sample_03', 'sample_04', 'sample_05', 
+          'sample_06', 'sample_07', 'sample_08', 'sample_09', 'sample_10', 
+          'sample_11']
+#plates = ['sample_01', 'sample_02']
 
 ## create a dictionary, with plates as keys, storing ngiID and the inclusion
 ## ... file as values.
@@ -67,9 +72,9 @@ rule all:
     ## 01: make symlinks to raw data
     expand(rawDataDir + "{plate}/{ngiID}_R1_001.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand(rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-    expand("logs/ruleLogs/makeSymLinks/{plate}_{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/makeSymLinks/{plate}__{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     ## 02: process fastq files before mapping
-    expand("logs/ruleLogs/extractUMIs/{plate}_{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/extractUMIs/{plate}__{ngiID}.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("logs/ruleLogs/trimAdapter/{plate}/{ngiID}_cutadapt.report.txt", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("processed/fastqs/{plate}/{ngiID}_R1_001.extractedUmi.trimmed.fixedReadName.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("processed/fastqs/{plate}/{ngiID}_R2_001.extractedUmi.trimmed.fixedReadName.fastq.gz", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
@@ -79,8 +84,12 @@ rule all:
     expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam.bai", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
     expand("logs/ruleLogs/addTagsToBamAndIndex/{plate}/{ngiID}_addTagsToBamAndIndex.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
-    ## 04: CB correction, de-multiplexing and de-duplicating
-    expand("processed/bamDemultiplexed/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.replaceNs.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    ## 04: CB correction, de-multiplexing, de-duplicating and counting
+    #expand("logs/ruleLogs/correctCBsAndDeMultiplex/{plate}/{ngiID}_correctCBandDeMultiplqex.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    #directory(expand("processed/bam/{plate}/demultiBams/{ngiID}/", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates])),
+    #expand("processed/bamDemultiplexed/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.replaceNs.bam", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/deDuplicate/{plate}/{ngiID}_deDuplicate.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
+    expand("logs/ruleLogs/countReads/{plate}/{ngiID}_featureCounts.log", zip, plate = plates, ngiID = [plateInfo[p]['ngiID'] for p in plates]),
 
 
 ## ------------------------------------------------------------------------
@@ -94,7 +103,7 @@ rule makeSymLinks:
   output:
     outR1 = rawDataDir + "{plate}/{ngiID}_R1_001.fastq.gz",
     outR2 = rawDataDir + "{plate}/{ngiID}_R2_001.fastq.gz",
-    logFile = "logs/ruleLogs/makeSymLinks/{plate}_{ngiID}.log"
+    logFile = "logs/ruleLogs/makeSymLinks/{plate}__{ngiID}.log"
   params:  
     outDir = directory(rawDataDir + "{plate}")
   shell:
@@ -130,7 +139,7 @@ rule extractUMIs:
     outNoUmiR1 = temp("processed/fastqs/{plate}/{ngiID}_R1_001.noUmi.fastq.gz"),
     outUmiR2 = temp("processed/fastqs/{plate}/{ngiID}_R2_001.umi.fastq.gz"),
     outNoUmiR2 = temp("processed/fastqs/{plate}/{ngiID}_R2_001.noUmi.fastq.gz"),    
-    logFile = "logs/ruleLogs/extractUMIs/{plate}_{ngiID}.log"
+    logFile = "logs/ruleLogs/extractUMIs/{plate}__{ngiID}.log"
   params:
     fastqDir = directory("processed/fastqs/{plate}"),
     bcPatternParam = lambda wildcards: """--bc-pattern='^(?P<discard_1>ATTGCGCAATG{s<=1})(?P<umi_1>.{8}).*'"""
@@ -280,6 +289,8 @@ rule addTagsToBamAndIndex:
 ## 04 - Cell barcode correction, de-multiplexing and de-duplication
 ## ------------------------------------------------------------------------
 
+# The rule below is not necessary anymore since this is now accounted for
+# in Marcel's scripts (N is replaced by A and error stats handled accorfingly).
 # Since we have cell barcodes with Ns as a base instead of only [A,C,G,T] 
 # ... we replace the Ns with an A. The reason for this is that the 
 # ... script which will do cell barcode correction strictly assumes that
@@ -297,12 +308,84 @@ rule replaceNsWithAsInCRtag:
     cd {baseDir} && \
     module load {samtoolsMod} && \
 
-    # in teh CR tag, replace any "N" with an "A"
+    # in the CR tag, replace any "N" with an "A"
     samtools view -h {input.inBam} | {params.script} | \
       samtools view -b -o {output.outBam}
     '''
 
+rule correctCBsAndDeMultiplex:
+  input:
+    inBam = "processed/bam/{plate}/{ngiID}_Aligned.sortedByCoord.out.withTags.bam"
+  params:
+    script = {cbCorrectionScript} 
+  output:
+    outDir = directory("processed/bam/{plate}/demultiBams/{ngiID}"),
+    logFile = "logs/ruleLogs/correctCBsAndDeMultiplex/{plate}/{ngiID}_correctCBandDeMultiplqex.log"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    if [ ! -d "logs/ruleLogs/correctCBsAndDeMultiplex" ]; then
+      mkdir -p "logs/ruleLogs/correctCBsAndDeMultiplex";
+    fi && \
+    if [ ! -d {output.outDir} ]; then
+      mkdir -p {output.outDir};
+    fi && \
+    
+    # do cell barcode correction and de-multiplexing. The --mismatches parameter is per index 
+    # ... (each cell has two indeces representing plate row and col information).
+    {python} {params.script} --output {output.outDir}/cbCorrected.{{barcode}}.bam --mismatches 1 {input.inBam} > {output.logFile} 2>&1
+    '''
 
+rule deDuplicate:
+  input: 
+    inDir = "processed/bam/{plate}/demultiBams/{ngiID}"
+  output:
+    outDir = directory("processed/bam/{plate}/demultiBamsDedup/{ngiID}"),
+    logFile = "logs/ruleLogs/deDuplicate/{plate}/{ngiID}_deDuplicate.log"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    if [ ! -d "logs/ruleLogs/deDuplicate" ]; then
+      mkdir -p "logs/ruleLogs/deDuplicate";
+    fi && \
+    if [ ! -d {output.outDir} ]; then
+      mkdir -p {output.outDir};
+    fi && \
+    module load {samtoolsMod} && \
 
+    # de-dupliacte read (for PCR duplicates only)
+    touch {output.logFile} && \
+    for bam in {input.inDir}/*.bam; do
+        samtools collate -@ 40 -O -u $bam | samtools fixmate -@ 40 -m -u - - | samtools sort -@ 40 -u - | samtools markdup -r -@ 40 - ${{bam/demultiBams/demultiBamsDedup}} >> {output.logFile} 2>&1
+    done
+    '''
 
+# This is our preliminary count strategy:
+# ... do not count reads overlapping with multiple features.
+# ... do not count multi-mapping reads.
+# ... count primary reads only.
+# ... count in an unstranded way.
+# ... count PE reads as SE (by not specifying --countReadPairs).
+rule countReads:
+  input:
+    bamDir = "processed/bam/{plate}/demultiBamsDedup/{ngiID}"
+  params:
+    gtf = {exonGtf} 
+  output:
+    outDir = directory("processed/count/{plate}/{ngiID}"),
+    logFile = "logs/ruleLogs/countReads/{plate}/{ngiID}_featureCounts.log"
+  shell:
+    '''
+    # setup
+    cd {baseDir} && \
+    if [ ! -d "logs/ruleLogs/countReads" ]; then
+      mkdir -p "logs/ruleLogs/countReads";
+    fi && \
+    if [ ! -d {output.outDir} ]; then
+      mkdir -p {output.outDir};
+    fi && \
+    {featureCounts} -F GTF -t sequence_feature -g ID --primary -s 0 -p -T 40 -a {params.gtf} -o {output.outDir}/counts.txt {input.bamDir}/*.bam > {output.logFile} 2>&1
+    '''
 

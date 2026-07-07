@@ -10,10 +10,16 @@ rawDataDir: "raw/"
 
 ## reference genome
 starRefGenome: "/cfs/klemming/projects/snic/naiss2024-22-1277/Dania/Db/mouse/gencode/release_M37/refSTAR/refSTAR-2.7.11b-primaryRef-fullAnnotation-overhang133/ref"
+exonGtf: "/cfs/klemming/projects/snic/naiss2024-22-1277/Dania/GitHub/isoforms_project/processOnDardel/flattenedExonicAnnotations.gtf"
 
 ## tools
 umi_tools: "/cfs/klemming/projects/snic/naiss2024-22-1277/Dania/Apps/pixiEnvs/umi_tools/umi_tools-1.1.6/.pixi/envs/default/bin/umi_tools"
 cutadaptMod: "cutadapt/5.1"
 starMod: "rnastar/2.7.11b"
 samtoolsMod: "samtools/1.20"
+python: "/cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Apps/pixiEnvs/python/python-v3.11.14/.pixi/envs/default/bin/python"
+featureCounts: "/cfs/klemming/home/d/dama4465/Projects/M_Szczot_2405/naiss2024-22-1277/Dania/Apps/pixiEnvs/subread/subread-v2.1.1/.pixi/envs/default/bin/featureCounts"
+
+## scripts
+cbCorrectionScript: "/cfs/klemming/projects/snic/naiss2024-22-1277/Dania/GitHub/isoforms_project/cellbarcodes.py"
 

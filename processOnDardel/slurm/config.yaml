@@ -31,4 +31,13 @@ set-resources:
   replaceNsWithAsInCRtag:
     runtime: '5h'
     mem: '20GB'
+  correctCBsAndDeMultiplex:
+    runtime: '20h'
+    mem: '50GB' 
+  deDuplicate: 
+    runtime: '20h'
+    mem: '50GB'
+  countReads: 
+    runtime: '10h'
+    mem: '50GB'
 
