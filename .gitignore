@@ -7,3 +7,5 @@ processOnDardel/processed
 processOnDardel/flattenedExonicAnnotations.gtf
 processOnDardel/test
 
+.Rproj.user
+*.Rproj
