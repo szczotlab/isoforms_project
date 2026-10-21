@@ -5,4 +5,5 @@ processOnDardel/logs
 processOnDardel/raw
 processOnDardel/processed
 processOnDardel/flattenedExonicAnnotations.gtf
+processOnDardel/test
 

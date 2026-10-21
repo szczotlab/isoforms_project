@@ -386,6 +386,20 @@ rule countReads:
     if [ ! -d {output.outDir} ]; then
       mkdir -p {output.outDir};
     fi && \
-    {featureCounts} -F GTF -t sequence_feature -g ID --primary -s 0 -p -T 40 -a {params.gtf} -o {output.outDir}/counts.txt {input.bamDir}/*.bam > {output.logFile} 2>&1
+    module load {samtoolsMod}
+
+    # exclude empty bam files
+    touch {output.logFile} && \
+    valid_bams=()
+    for bam in {input.bamDir}/*.bam; do
+      if [ "$(samtools view -c "$bam")" -gt 0 ]; then
+        valid_bams+=("$bam")
+      else 
+        echo "Skipping empty BAM: $bam" >> {output.logFile} 2>&1
+      fi
+    done 
+
+    # run featureCounts
+    {featureCounts} -F GTF -t sequence_feature -g ID --primary -s 0 -p -T 40 -a {params.gtf} -o {output.outDir}/counts.txt "${{valid_bams[@]}}" >> {output.logFile} 2>&1
     '''
 

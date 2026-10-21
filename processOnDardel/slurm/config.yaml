@@ -10,7 +10,7 @@ default-resources:
 ## rule-specific resources
 set-resources:
   extractUMIs:
-    runtime: '5h'
+    runtime: '8h'
     threads: 10
     mem_mb: 30000
   concatenateFastqs:
@@ -22,7 +22,7 @@ set-resources:
     runtime: '5h'
     threads: 10
   mapWithStar:
-    runtime: '7h'
+    runtime: '10h'
     threads: 30
     mem: '50GB'
   addTagsToBamAndIndex:
@@ -38,6 +38,6 @@ set-resources:
     runtime: '20h'
     mem: '50GB'
   countReads: 
-    runtime: '10h'
-    mem: '50GB'
+    runtime: '15h'
+    mem: '80GB'
 
