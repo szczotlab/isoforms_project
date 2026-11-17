@@ -7,6 +7,14 @@ processOnDardel/processed
 processOnDardel/flattenedExonicAnnotations.gtf
 processOnDardel/test
 
+diffExonUsage/RData
+diffExonUsage/scripts/*.html
+diffExonUsage/scripts/*_files
+diffExonUsage/metaData
+diffExonUsage/counts
+diffExonUsage/inclusionLists
+
 .Rproj.user
 *.Rproj
 .Rhistory
+*.DS_Store
