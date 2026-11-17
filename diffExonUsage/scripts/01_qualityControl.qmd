@@ -1,0 +1,875 @@
+---
+title: "01_qualityControl"
+author: "Dania Machlab"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    toc: true
+    toc-depth: 4
+    number-sections: false
+    theme: yeti
+    highlight-style: tango
+editor: source
+knitr:
+  opts_chunk:
+    dev:
+      - png
+      - pdf
+params: 
+  countsDir: "../counts"
+  inclusionListDir: "../inclusionLists"
+  metadataFile: "../metaData/all_samples_metadata-18_02_26-2.csv"
+  plateMetadataFile: "../metaData/metaTemplate.xlsx"
+  fullGtfFile: "../metaData/gencode.vM37.primary_assembly.annotation.gtf"
+  sceListFile: "../RData/01_sceListFull.rds"
+  sceListFilteredFile: "../RData/01_sceListFiltered.rds"
+---
+
+
+# Overview
+
+We read in the exon by cell count matrices and do some QC, labelling poor quality cells.
+
+```{r}
+#| label: packages
+
+## Packages
+suppressPackageStartupMessages({
+    library(BiocParallel)
+    library(dplyr)
+    library(DropletUtils)
+    library(geomtextpath)
+    library(ggbeeswarm)
+    library(ggplot2)
+    library(limma)
+    library(Matrix)
+    library(patchwork)
+    library(readxl)
+    library(scater)
+    library(scuttle)
+    library(scrapper)
+    library(SingleCellExperiment)
+    library(stringr)
+})
+
+## Params
+(countsDir <- params$countsDir)
+(inclusionListDir <- params$inclusionListDir)
+(metadataFile <- params$metadataFile)
+(plateMetadataFile <- params$plateMetadataFile)
+(fullGtfFile <- params$fullGtfFile)
+(sceListFile <- params$sceListFile)
+(sceListFilteredFile <- params$sceListFilteredFile)
+```
+
+
+# Read in counts and prepare SCE objects
+
+We will read in the count matrices and prepare the `SingleCellExperiment` objects (per plate). We also add the cell metadata we have from the group with condition information amongst other things.
+
+```{r}
+#| label: prepareSCEs
+
+## Plates
+plates <- basename(list.dirs(countsDir, recursive = FALSE))
+names(plates) <- plates
+
+## Cell metadata (from the group)
+metadata <- read.csv(metadataFile)
+
+## Plate metadata (filled by group)
+plateMetadata <- read_excel(plateMetadataFile)
+colnames(plateMetadata) <- c("groupPlateID", "groupNGIid", "groupOldESCGid", 
+                             "groupSeqSetup", "groupTrimming", "groupFC", 
+                             "groupSequencer", "groupAmplificationCycles", 
+                             "groupPlateNumber", "groupSampleName", 
+                             "groupStimulus", "groupNumbAnimals", 
+                             "groupPlateName", "groupCluster", 
+                             "groupFastqFilePath", "grouplibraryPrepBatch", 
+                             "groupAnythingExtra")
+
+## GTF file used (full original gtf)
+gtf <- read.table(fullGtfFile, sep = "\t")
+genes <- gtf[gtf[, 3] == "gene", ]
+genes <- genes %>%
+  mutate(
+    gene_id     = str_extract(V9, "(?<=gene_id )[^;]+"),
+    gene_type   = str_extract(V9, "(?<=gene_type )[^;]+"),
+    gene_name   = str_extract(V9, "(?<=gene_name )[^;]+"),
+    level       = str_extract(V9, "(?<=level )[^;]+"),
+    mgi_id      = str_extract(V9, "(?<=mgi_id )[^;]+"),
+    havana_gene = str_extract(V9, "(?<=havana_gene )[^;]+")
+  )
+
+## Create SCE list
+sceList <- lapply(plates, function(plate){
+    
+    # Read in processed matrix
+    processedMatFile <- list.files(file.path(countsDir, plate), 
+                             recursive = TRUE, 
+                             pattern = "counts.txt$") 
+    processedMatFile <- file.path(countsDir, plate, processedMatFile)
+    processedMat <- read.table(processedMatFile, header = TRUE)
+    
+    # Get exon information
+    exonInfo <- DataFrame(processedMat[, 1:6])
+    colnames(exonInfo) <- paste0("Exon", colnames(exonInfo))
+    colnames(exonInfo)[grep("ExonGeneid", colnames(exonInfo))] <- "GeneExonID"
+    exonInfo$GeneID <- limma::strsplit2(exonInfo$GeneExonID, ":")[, 1]
+    m <- match(exonInfo$GeneID, genes$gene_id)
+    exonInfo$GeneName <- genes$gene_name[m]
+    exonInfo$GeneType <- genes$gene_type[m]
+    rownames(exonInfo) <- paste0(exonInfo$GeneExonID, ":", exonInfo$GeneName)
+    
+    # Get count matrix
+    cntMat <- as.matrix(processedMat[, 7:ncol(processedMat)])
+    cntMat <- as(cntMat, "CsparseMatrix")
+    cb <- limma::strsplit2(colnames(cntMat), "cbCorrected.|.bam")[,3]
+    colnames(cntMat) <- gsub("[.]", "_", cb)
+    rownames(cntMat) <- paste0(exonInfo$GeneExonID, ":", exonInfo$GeneName)
+    
+    # Get cell information (match relying on plate AND CB match)
+    key1 <- paste0(gsub("_", "", colnames(cntMat)), "_", plate)
+    key2 <- paste0(metadata$CB, "_sample_", 
+                   str_pad(metadata$Plate.number, width = 2, pad = "0"))
+    m <- match(key1, key2)
+    cellInfo <- DataFrame(metadata[m, ])
+    rownames(cellInfo) <- colnames(cntMat)
+    colnames(cellInfo)[grep("CB", colnames(cellInfo))] <- "CBfromGroup"
+    cellInfo$cellbarcode <- rownames(cellInfo)
+    # ... Add plate metadata
+    m <- match(as.integer(sub("sample_", "", plate)), plateMetadata$groupPlateNumber)
+    cellInfo <- cbind(cellInfo, plateMetadata[rep(m, nrow(cellInfo)), ])
+
+    # Prepare SCE
+    SingleCellExperiment(assays = list(counts = cntMat), 
+                         rowData = exonInfo, 
+                         colData = cellInfo)
+})
+```
+
+
+## Checks
+
+We do some checks here. Note that I had to use both the place number and cell barcode to map our cells to the cell metadata from the group. Are we sure the plate and cell barcodes are correct there? According to NGI the cell barcodes should be unique even across plates, but that was not what I observed fro all plates. Maybe this is only true for plates that were processed together at the same time...
+
+Do most cell barcodes agree, as in for how many of our corrected cell barcodes is there no metadata available (no match in th group's CB list)?
+```{r}
+#| label: checkCellBarcodes
+
+sapply(sceList, function(sce){
+    table(is.na(colData(sce)$CBfromGroup))
+})
+```
+
+
+## Use the inclusion list to match CB positions on the plate
+
+
+```{r}
+#| label: readzInclusionLists
+
+## Read in the inclusions lists
+inclL <- lapply(plates, function(plate){
+    inclFile <- list.files(file.path(inclusionListDir, plate), 
+                           pattern = ".well_barcodes.txt", 
+                           recursive = TRUE, full.names = TRUE)
+    inclDf <- read.table(inclFile, header = FALSE, skip = 2)
+    colnames(inclDf) <- c("barcode", "wellID")
+    inclDf
+})
+
+## Add the wellID to the SCE colData
+all(names(sceList) == names(inclL))
+sceList <- mapply(function(sce, inclDf){
+    m <- match(gsub("_", "", colnames(sce)), inclDf$barcode)
+    colData(sce) <- cbind(colData(sce), inclDf[m, ])
+    sce
+}, 
+sceList, inclL)
+
+## Check for incompatibilities in wellID from the file and the group
+
+lapply(sceList, function(sce){
+    table(sce$CBfromGroup == sce$barcode, useNA = "ifany")
+})
+
+```
+
+All the cell barcodes match those from the group. We have NA values for the cells which were not in the group's metadata.
+
+
+# Calculate cell QC
+
+To do cell-level QC we will generate gene by cell counts by summing the reads of the exons belonging to the same gene.
+
+
+```{r}
+#| label: calculateCellQC
+#| warning: false
+
+## Check all SCEs have the same exons in teh same order
+sapply(sceList, function(sce){
+    all(rownames(sce) == rownames(sceList[[1]]))
+})
+
+## Exons belonging to MT genes 
+(Mt <- rownames(sceList[[1]])[rowData(sceList[[1]])$ExonChr == "chrM"])
+
+## Exons belonging to ribosomal genes 
+ribo <- rownames(sceList[[1]])[grepl(pattern = "^RP", 
+                                     x = rowData(sceList[[1]])$GeneName, 
+                                     ignore.case = TRUE)]
+length(ribo)
+head(ribo)
+
+## Calculate QC metric on the cell level
+## ... addPerCellQC is deprecated 
+# sceList <- lapply(sceList, function(sce){
+#     sce <- quickRnaQc.se(sce,
+#                        assay.type = "counts",
+#                        subsets = list(Mt = Mt, ribo = ribo))
+#     sce$subsets_Mt_percent <- sce$subset.proportion.Mt * 100
+#     sce$subsets_ribot_percent <- sce$subset.proportion.ribo * 100
+#     sce$keep <- NULL
+#     sce
+# })
+sceList <- lapply(sceList, function(s){
+  s <- scuttle::addPerCellQC(s,
+                             assay.type = "counts",
+                             subsets = list(Mt = Mt, ribo = ribo),
+                             BPPARAM = MulticoreParam(2))
+  s
+})
+```
+
+# Library size distributions
+
+```{r}
+#| label: libSize
+
+## Prepare to plot
+df <- bind_rows(lapply(sceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+
+## Plot
+ggplot(df) + 
+    geom_density(aes(x = log2(sum + 1), fill = plate), alpha = 0.3) + 
+    theme_bw() 
+
+ggplot(df) + 
+    geom_violin(aes(x = plate, y = log2(sum + 1)), fill = "steelblue") + 
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+## Knee plot
+
+What does the knee plot look like and can we do some filtering there?
+
+```{r}
+#| label: knee
+#| fig-width: 10
+#| fig-height: 8
+
+## Chosen cutoff (based on the plots below)
+kneeCutoff <- 80000
+
+## Mark cells passing knee QC
+sceList <- lapply(sceList, function(sce){
+  sce$passKnee <- sce$sum >= kneeCutoff
+  sce
+})
+
+## Print out number of cells passing knee QC
+sapply(sceList, function(sce){sum(sce$passKnee)})
+
+## Calculate cell ranks for given lib sizes
+bcrankList <- lapply(sceList, function(sce){
+    barcodeRanks(counts(sce))
+})
+
+## Plot knees per plate
+plates <- names(bcrankList)
+names(plates) <- plates
+df <- bind_rows(lapply(plates, 
+                       function(plate){
+                           bcrank <- as.data.frame(bcrankList[[plate]])
+                           bcrank$passKnee <- sceList[[plate]]$passKnee
+                           bcrank
+                       }), 
+                .id = "plate") 
+ggplot(df) + 
+    geom_point(aes(x = rank, y = total, color = plate)) + 
+    geom_hline(yintercept = kneeCutoff, linetype = 3) +
+    scale_x_log10() + 
+    scale_y_log10() + 
+    theme_bw()
+ggplot(df) + 
+    geom_point(aes(x = rank, y = total, color = passKnee)) + 
+    geom_hline(yintercept = kneeCutoff, linetype = 3) +
+    scale_x_log10() + 
+    scale_y_log10() + 
+    theme_bw() + 
+    facet_wrap(~plate)
+```
+
+
+# Percent mitochondrial reads
+
+We look at the percent of mitochondrial reads per cell. Cells with a too high mitochondrial content are usually and indication of poor quality cells where cells may have burst for example.
+
+```{r}
+#| label: percMito
+#| fig-width: 10
+#| fig-height: 8
+
+## Chosen cutoff (based on the plots below)
+mtCutoff <- 9
+
+## Mark cells passing percMt QC
+sceList <- lapply(sceList, function(se){
+  se$passPercMt <- se$subsets_Mt_percent <= mtCutoff
+  se
+})
+
+## Print out number of cells passing percMt QC
+sapply(sceList, function(se){sum(se$passPercMt)})
+
+## Prepare to plot
+df <- bind_rows(lapply(sceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") |> 
+    dplyr::arrange(subsets_Mt_percent)
+
+## Plot
+ggplot(df, aes(x = seq_along(subsets_Mt_percent), y = subsets_Mt_percent, color = plate)) +
+  geom_line(size = 2) + 
+  theme_classic() +
+  geom_hline(yintercept = mtCutoff, linetype = 3) +
+  xlab("Rank") + 
+  ylab("Percent Mt reads per cell") 
+
+ggplot(df, aes(x = seq_along(subsets_Mt_percent), y = subsets_Mt_percent, color = passPercMt)) +
+  geom_line(linewidth = 2) + 
+  theme_classic() +
+  geom_hline(yintercept = mtCutoff, linetype = 3) +
+  xlab("Rank") + 
+  ylab("Percent Mt reads per cell") + 
+  facet_wrap(~plate)
+```
+
+
+We still retain a good number of cells passing the percMT threshold and some plates have more poor quality cells than others.
+
+Which cells here pass the knee QC?
+```{r}
+#| label: percMitoKnee
+#| fig-width: 20
+#| fig-height: 6
+
+lapply(sceList, function(sce){
+    table(passPercMt = sce$passPercMt, passKnee = sce$passKnee)
+})
+
+ggplot(df, aes(x = seq_along(subsets_Mt_percent), y = subsets_Mt_percent, color = passPercMt)) +
+  geom_line(size = 2) + 
+  theme_classic() +
+  geom_hline(yintercept = mtCutoff, linetype = 3) +
+  xlab("Rank") + 
+  ylab("Percent Mt reads per cell") + 
+  facet_grid(passKnee~plate)
+```
+
+
+# Detected exons
+
+Next we look at the number of detected exons per cell. Usually we use the number of detected genes per cell to filter poor quality cells. Let's see what this looks like on the exon level and later compare if this is similar on the gene level.
+
+```{r}
+#| label: detectedExons
+
+## Prepare to plot
+df <- bind_rows(lapply(sceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+
+ggplot(df) + 
+    geom_violin(aes(x = plate, y = detected), fill = "steelblue") +
+    theme_bw() + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+
+# Detected genes
+
+```{r}
+#| label: detectedGenes
+#| warning: false
+
+## Create gene by cell matrices
+geneSceList <- lapply(sceList, function(sce){
+    sce <- scuttle::aggregateAcrossFeatures(sce, ids = rowData(sce)$GeneID)
+    sce$detectedGenes <- colSums(counts(sce) > 0)
+    sce
+})
+
+## Plot detected genes
+df <- bind_rows(lapply(geneSceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+ggplot(df) + 
+    geom_violin(aes(x = plate, y = detectedGenes), fill = "steelblue") +
+    theme_bw() + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+```{r}
+#| label: detectedGenesVsDetectedExons
+#| fig-width: 10
+#| fig-height: 10
+
+ggplot(df) + 
+    geom_point(aes(x = detected, y = detectedGenes), fill = "steelblue") +
+    theme_bw() + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) + 
+    xlab("Detected Exons") + 
+    ylab("Detected Genes") + 
+    geom_textabline(slope = 1, intercept = 0,
+                  label = "y = x", linetype = "dashed",
+                  hjust = 0.9, vjust = -0.3) + 
+    facet_wrap(~plate)
+```
+
+
+I think with either metric the bottom low quality cells should mostly overlap. Since detected genes is what's commonly used, we will use that to identify poor quality cells. Let's do that per plate.
+```{r}
+#| label: passDetectedGenes
+
+## Add detected gene information to the exon by cell SCEs
+plates <- names(sceList)
+names(plates) <- plates
+sceList <- lapply(plates, function(plate){
+    sce <- sceList[[plate]]
+    sce$detectedGenes <- geneSceList[[plate]]$detectedGenes
+    sce
+})
+
+## MAD cutoff
+mads <- 3
+
+## Mark cells passing detectedGenes QC
+sceList <- lapply(sceList, function(sce){
+  outlier <- isOutlier(metric = sce$detectedGenes, 
+                       nmads = mads, 
+                       type = "lower", 
+                       log = TRUE)
+  outlier <- as(outlier, "logical")
+  sce$passDetectedGenes <- ! outlier
+  sce
+})
+
+## Print out number of cells passing detectedGenes QC
+sapply(sceList, function(sce){sum(sce$passDetectedGenes)})
+
+## Plot
+df <- bind_rows(lapply(sceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+
+ggplot(df, aes(x = plate, y = detectedGenes)) +
+  geom_violin(fill = "lightblue", alpha = 0.4) +
+  geom_quasirandom(aes(color = passDetectedGenes), width = 0.15, 
+                   size = 0.5, alpha = 1) + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) 
+```
+
+
+
+There are plate differences and one could argue that we could filter even more cells from plate 3. We will keep this in mind in the t-SNE to see if detected genes drives any cluster differences and unwanted technical sources of variation. Overall, this is a very good quality dataset in terms of number of detected genes with most cells having the mass above 10k detected genes.
+
+Each plate would have a different hard cutoff. We use the MADs and set the same MAD cutoff across all plates to identify low quality cells based on number of detected genes. With this approach, we assume that most of the dataset, per plate, consists of high quality cells. It is important to know if a particular plate breaks this assumption. Cells are then identified as outliers based on the median absolute deviation (MAD) from the median number of detected genes across all cells. This is done on the log transformed detected genes. With a MAD=2, a one-sided test and assuming a normal distribution on the distances to the median number of detected genes, roughly 97.7% of cells should be kept. We can revisit the MAD cutoff again if this wasn't strict enough. I initially had set it to 2.
+
+
+# Library size vs percMt
+
+```{r}
+#| label: perMtvsLibSize
+#| fig-width: 15
+#| fig-height: 10
+
+df <- bind_rows(lapply(geneSceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+
+ggplot(df) + 
+    geom_point(aes(x = sum, y = subsets_Mt_percent, color = passPercMt), 
+               size = 0.5, alpha = 1) +
+    theme_bw() + 
+    facet_wrap(~plate)
+ggplot(df) + 
+    geom_point(aes(x = sum, y = subsets_Mt_percent, color = passPercMt), 
+               size = 0.5, alpha = 1) +
+    theme_bw() + 
+    facet_wrap(~cluster)
+```
+
+Are we removing too many or few cells with both high percMt and library size? Do we expect some cell types to have a high mitochondrial fraction for biological reasons? See especially plates 8 and 9. Using the cluster labels form the group, I don't detect  cell-type specific differences but we can re-visit this once we see if our clustering matches theirs. 
+
+
+# Mark low quality cells
+
+We will mark low quality cells to discard if it has been flagged in any of the knee plot, the percMt plots and the number of detected genes.
+
+```{r}
+#| label: markQCpass
+
+## Mark cells passing all QC metrics
+sceList <- lapply(sceList, function(sce){
+    sce$passQC <- sce$passKnee & sce$passPercMt & sce$passDetectedGenes
+    sce
+})
+
+## Number of retained cells
+lapply(sceList, function(sce){sum(sce$passQC)})
+
+## Fraction of retained cells
+lapply(sceList, function(sce){sum(sce$passQC) / length(sce$passQC)})
+```
+
+```{r}
+#| label: fractionCellsPassingQC
+
+df <- bind_rows(lapply(sceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+ggplot(df) + 
+  geom_bar(aes(x = plate, fill = passQC)) + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) 
+```
+
+
+# Detected genes vs percMt
+
+```{r}
+#| label: detectedGenesVsPercMt
+#| fig-width: 15
+#| fig-height: 10
+
+df <- bind_rows(lapply(sceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+
+ggplot(df, aes(x = subsets_Mt_percent, y = detectedGenes)) + 
+  geom_point(size = 1, alpha = 1) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = subsets_Mt_percent, y = detectedGenes, color = passQC)) + 
+  geom_point(size = 1, alpha = 1) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = subsets_Mt_percent, y = detectedGenes, color = passKnee)) + 
+  geom_point(size = 1, alpha = 1) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = subsets_Mt_percent, y = detectedGenes, color = passPercMt)) + 
+  geom_point(size = 1, alpha = 1) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = subsets_Mt_percent, y = detectedGenes, color = passDetectedGenes)) + 
+  geom_point(size = 1, alpha = 1) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = subsets_Mt_percent, y = detectedGenes, color = passDetectedGenes)) + 
+  geom_point(size = 1, alpha = 1) + 
+  theme_classic() + 
+  facet_wrap(~cluster)
+```
+
+
+It makes sense that low quality cells from the knee plot also have few detected genes. Cells with lower library size will also have a lower number of detected genes.
+As for the grouping by cell type, the way I interpret this is: per cluster or cell type most cells are good quality cells which makes sense because they already did cell filtering. Ther is an unlabelled group (first one) where most of the poor qauality cells are, this also makes sense as these are likely the cells they also filtered and thus didnt get assigned a cluster. However there are many cells we retain which can add to the analysis and potentially contribute to the other clusters. There is a "UN" and NA cluster, are those undefined? We will revisit this more closely when we do our own cell clustering.
+
+# Detected genes vs library size
+
+This gives us an indication of sequencing saturationa nd library complexity. Is our sequencing depth ok or could we have sequenced more? We want to see a curve indicating sequencing saturation was reached, and that this is comparable across the datasets.
+
+```{r}
+#| label: libSizeVsDetectedGenes
+#| fig-width: 15
+#| fig-height: 10
+
+df <- bind_rows(lapply(sceList, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+
+ggplot(df, aes(x = sum, y = detectedGenes)) + 
+  geom_point(alpha = 0.5) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = sum, y = detectedGenes)) + 
+  geom_point(aes(color = passQC), alpha = 0.5) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = sum, y = detectedGenes)) + 
+  geom_point(aes(color = passKnee), alpha = 0.5) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = sum, y = detectedGenes)) + 
+  geom_point(aes(color = passPercMt), alpha = 0.5) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = sum, y = detectedGenes)) + 
+  geom_point(aes(color = passDetectedGenes), alpha = 0.5) + 
+  theme_classic() + 
+  facet_wrap(~plate)
+
+ggplot(df, aes(x = sum, y = detectedGenes)) + 
+    geom_point(data = subset(df, select = -cluster), alpha = 0.5, color = "grey") + 
+    geom_point(aes(color = passQC), alpha = 0.5) + 
+    theme_classic() + 
+    facet_wrap(~cluster)
+```
+
+
+Perhaps it's harder to see this with SmartSeq data since we have less points than in 10x data. However I think there is some kind of saturation reached in most plates, harder to tell in plate 1. And there is a shift of points to the right in some plates, not all. Could this be special cell types? Doesn't seem so based on the cluster labels from the group. My feeling is we stil retain some poor quality cells we can do without if you look at teh unlabelled cluster grid. If our t-SNE is affected by poor QC cells we will need to re-visit this and filter more strictly.
+
+The loess fits seem mostly comparable across plates.
+```{r}
+#| label: libSizeVsDetectedGenesLoess
+
+ggplot(df, aes(x = sum, y = detectedGenes)) + 
+    geom_smooth(aes(color = plate)) + 
+    theme_classic() 
+```
+
+
+# Filter low quality cells
+
+We filter the low quality sets and re-do some plots to see how the different plates compare again.
+
+
+```{r}
+#| label: filterCells
+
+## Filter
+sceListFiltered <- lapply(sceList, function(sce){
+    sce[, sce$passQC]
+})
+
+## Prepare to plot
+df <- bind_rows(lapply(sceListFiltered, function(sce){as.data.frame(colData(sce))}), 
+                .id = "plate") 
+
+## Plot
+ggplot(df) + 
+    geom_density(aes(x = log2(sum + 1), fill = plate), alpha = 0.3) + 
+    theme_bw() 
+
+ggplot(df) + 
+    geom_violin(aes(x = plate, y = log2(sum + 1)), fill = "steelblue") + 
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+ggplot(df) + 
+    geom_violin(aes(x = plate, y = detected), fill = "steelblue") +
+    theme_bw() + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+ggplot(df) + 
+    geom_violin(aes(x = plate, y = detectedGenes), fill = "steelblue") +
+    theme_bw() + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+
+Let's color by some plate difference we are aware of from the metadata.
+
+```{r}
+#| label: detectedGenesColByPlateInfo
+#| fig-width: 18
+#| fig-height: 25
+
+colBy <- colnames(df)[grep("^group", colnames(df))]
+
+plotL <- lapply(colBy, function(col){
+    ggplot(df) + 
+        geom_violin(aes(x = plate, y = detectedGenes, fill = .data[[col]])) +
+        theme_bw() + 
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+})
+
+patchwork::wrap_plots(plotL, ncol = 2)
+```
+
+Do the number of animals used and the sequencer type affect the bimodality?
+
+```{r}
+#| label: libSizesColByPlateInfo
+#| fig-width: 18
+#| fig-height: 25
+
+colBy <- colnames(df)[grep("^group", colnames(df))]
+
+plotL <- lapply(colBy, function(col){
+    ggplot(df) + 
+    geom_density(aes(x = log2(sum + 1), fill = .data[[col]]), alpha = 0.3) + 
+    theme_bw() 
+})
+
+patchwork::wrap_plots(plotL, ncol = 2)
+```
+
+I think trimming, FC and sequencer explain some differences in library size distributions we see.. The question is how much is this going to affect or dominate the differences we see between cells and can we correct for them. We have some missing information on some and we don't know yet if the design allows for a correction. To be continued.
+
+# Top expressed genes
+
+```{r}
+#| label: topExprGenes
+#| fig-width: 10
+#| fig-height: 15
+
+plotList <- lapply(sceListFiltered, function(sce){
+  plate <- paste0("Plate ", unique(na.omit(sce$Plate.number)))
+  scater::plotHighestExprs(sce, n = 25) + ggtitle(plate)
+})
+
+patchwork::wrap_plots(plotList, ncol = 2)
+```
+
+Do the top expressed genes make sense?
+
+
+# Plate position QC
+
+Let's examine the QC metrics per cell whilst also visualizing its position on the plate.
+
+```{r}
+#| label: plateQC
+#| fig-width: 12
+#| fig-height: 20
+
+## Plot funciton
+plotPlate <- function(df, grid, var, log = FALSE) {
+    ggplot(df, aes(x = col, y = row)) +
+        geom_point(data = grid, shape = 21, size = 6, fill = "white", color = "grey80") +
+        geom_point(aes(fill = .data[[var]]), shape = 21, size = 6, color = "grey30") +
+        scale_x_discrete(drop = FALSE, position = "top") +
+        scale_y_discrete(drop = FALSE) +
+        coord_fixed() +
+        theme_minimal() +
+        theme(panel.grid = element_blank()) +
+        labs(x = NULL, y = NULL, fill = var)
+}
+
+## By libSize
+plotL <- lapply(names(sceList), function(plate){
+    sce <- sceList[[plate]]
+    df <- data.frame(
+        well       = sce$wellID,
+        libSize    = sce$sum,          
+        detectedGenes   = sce$detectedGenes,
+        detectedExons = sce$detected) %>%
+        mutate(
+            row = factor(substr(well, 1, 1), levels = rev(LETTERS[1:16])),
+            col = factor(as.integer(substring(well, 2)), levels = 1:24))
+    
+    plateGrid <- expand.grid(col = factor(1:24, levels = 1:24),
+                        row = factor(LETTERS[1:16], levels = rev(LETTERS[1:16])))
+    
+    plate <- paste0("Plate ", unique(na.omit(sce$Plate.number)))
+    plotPlate(df, plateGrid, "libSize") + scale_fill_viridis_c(trans = "log10") + ggtitle(plate)
+})
+patchwork::wrap_plots(plotL, ncol = 2)
+
+## By detectedGenes
+plotL <- lapply(names(sceList), function(plate){
+    sce <- sceList[[plate]]
+    df <- data.frame(
+        well       = sce$wellID,
+        libSize    = sce$sum,          
+        detectedGenes   = sce$detectedGenes,
+        detectedExons = sce$detected) %>%
+        mutate(
+            row = factor(substr(well, 1, 1), levels = rev(LETTERS[1:16])),
+            col = factor(as.integer(substring(well, 2)), levels = 1:24))
+    
+    plateGrid <- expand.grid(col = factor(1:24, levels = 1:24),
+                        row = factor(LETTERS[1:16], levels = rev(LETTERS[1:16])))
+    
+    plate <- paste0("Plate ", unique(na.omit(sce$Plate.number)))
+    plotPlate(df, plateGrid, "detectedGenes") + scale_fill_viridis_c(trans = "log10") + ggtitle(plate)
+})
+patchwork::wrap_plots(plotL, ncol = 2)
+
+## By detectedExons
+plotL <- lapply(names(sceList), function(plate){
+    sce <- sceList[[plate]]
+    df <- data.frame(
+        well       = sce$wellID,
+        libSize    = sce$sum,          
+        detectedGenes   = sce$detectedGenes,
+        detectedExons = sce$detected) %>%
+        mutate(
+            row = factor(substr(well, 1, 1), levels = rev(LETTERS[1:16])),
+            col = factor(as.integer(substring(well, 2)), levels = 1:24))
+    
+    plateGrid <- expand.grid(col = factor(1:24, levels = 1:24),
+                        row = factor(LETTERS[1:16], levels = rev(LETTERS[1:16])))
+    
+    plate <- paste0("Plate ", unique(na.omit(sce$Plate.number)))
+    plotPlate(df, plateGrid, "detectedExons") + scale_fill_viridis_c(trans = "log10") + ggtitle(plate)
+})
+patchwork::wrap_plots(plotL, ncol = 2)
+
+## By passQC
+plotL <- lapply(names(sceList), function(plate){
+    sce <- sceList[[plate]]
+    df <- data.frame(
+        well       = sce$wellID,
+        libSize    = sce$sum,          
+        detectedGenes   = sce$detectedGenes,
+        detectedExons = sce$detected, 
+        passQC = sce$passQC) %>%
+        mutate(
+            row = factor(substr(well, 1, 1), levels = rev(LETTERS[1:16])),
+            col = factor(as.integer(substring(well, 2)), levels = 1:24))
+    
+    plateGrid <- expand.grid(col = factor(1:24, levels = 1:24),
+                        row = factor(LETTERS[1:16], levels = rev(LETTERS[1:16])))
+    
+    plate <- paste0("Plate ", unique(na.omit(sce$Plate.number)))
+    plotPlate(df, plateGrid, "passQC") + ggtitle(plate)
+})
+patchwork::wrap_plots(plotL, ncol = 2)
+```
+
+
+
+# Save
+
+We save the SCE objects here, both in full and the filtered version.
+
+```{r}
+#| label: save
+
+saveRDS(sceList, sceListFile)
+saveRDS(sceListFiltered, sceListFilteredFile)
+```
+
+
+# Session
+
+```{r}
+date()
+sessionInfo()
+```
+
+
+
+
+
+
